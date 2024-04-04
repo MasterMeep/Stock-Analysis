@@ -23,6 +23,11 @@ class Stock:
         self.walk_max_values = None
         self.breakeven = None
         self.num_walks = None
+        self.random_walk_shape_loc_scale = None
+        self.random_walk_pdf = None
+        self.random_walk_cdf = None
+        self.random_walk_x = None
+        self.call_premium = None
         
     def set_close_data(self, period):
         close = self.ticker.history(period=period, interval="1d")
@@ -47,15 +52,28 @@ class Stock:
         self.pdf_percent_change = lognorm.pdf(x, shape, loc, scale)
 
     def set_walk_data(self, num_days, call_premium, num_walks, load_from_save=False):
-        save_name = f"{self.stock}_Period_{self.period}_Num_Days_{num_days}_Call_Premium_{call_premium}_Num_Walks_{num_walks}"
+        save_name = f"{self.stock}_Period_{self.period}_Num_Days_{num_days}_Call_Premium_{call_premium}_Num_Walks_{num_walks}_days_out_{num_days}"
         
         if load_from_save == False:
             random_walk = Random_walk(num_days, self.percent_change_mean, self.percent_change_std, self.last_price, num_walks)
             random_walk.walk(save_name=save_name)
-            
+        
+        self.call_premium = call_premium
         self.num_walks = num_walks
         self.walk_max_values = np.load(f"{save_name}.npy")
         self.breakeven = self.last_price + call_premium
+
+    def set_random_walk_pdf(self):
+        shape, loc, scale = lognorm.fit(self.walk_max_values)
+        x = np.linspace(np.min(self.walk_max_values)-10, np.max(self.walk_max_values), 100)
+        
+        pdf = lognorm.pdf(x, shape, loc, scale)
+        cdf = lognorm.cdf(x, shape, loc, scale)
+        
+        self.random_walk_shape_loc_scale = shape, loc, scale
+        self.random_walk_pdf = pdf
+        self.random_walk_cdf = cdf
+        self.random_walk_x = x        
 
     def plot_close(self, ax=None):
         
@@ -96,73 +114,77 @@ class Stock:
                 plt.subplots(figsize=(16, 3))
                 
                 plt.hist(self.close_data_percent_change, bins=20, color='skyblue', edgecolor='black', density=True, alpha=0.75, label='Percent Change')
-                plt.plot(x, self.pdf_percent_change, color='red', label='Log-Normal Distribution')
+                plt.plot(x, self.pdf_percent_change, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.close_data_percent_change):.4f} | std {np.std(self.close_data_percent_change):.4f}')
                 plt.xlabel("Percent Change")
                 plt.ylabel("")
-                plt.title(f"Log-normal distribution for percent change | mean {np.mean(self.close_data_percent_change):.2f} | std {np.std(self.close_data_percent_change):.2f}")
+                plt.title(f"Log-normal distribution for percent change | mean {np.mean(self.close_data_percent_change):.4f} | std {np.std(self.close_data_percent_change):.4f}")
                 
             else:
                 ax.hist(self.close_data_percent_change, bins=20, color='skyblue', edgecolor='black', density=True, alpha=0.75)
-                ax.plot(x, self.pdf_percent_change, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.close_data_percent_change):.2f} | std {np.std(self.close_data_percent_change):.2f}')
+                ax.plot(x, self.pdf_percent_change, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.close_data_percent_change):.4f} | std {np.std(self.close_data_percent_change):.4f}')
                 ax.set_xlabel("Percent Change")
                 ax.set_ylabel("")
-                ax.set_title(f"Log-normal distribution for percent change | mean {np.mean(self.close_data_percent_change):.2f} | std {np.std(self.close_data_percent_change):.2f}")
-                
-    def plot_walk(self, call_price_min=None, call_price_max=None, ax=None):
-        plt.hist(self.walk_max_values, bins=40, color='skyblue', edgecolor='black', density=True, alpha=0.75)
+                ax.set_title(f"Log-normal distribution for percent change | mean {np.mean(self.close_data_percent_change):.4f} | std {np.std(self.close_data_percent_change):.4f}")
+    
+    def plot_one_minus_cdf(self, stock_value=None, ax=None):
+        cdf = 1 - self.random_walk_cdf
+        x = self.random_walk_x
         
-        shape, loc, scale = lognorm.fit(self.walk_max_values)
-        x = np.linspace(np.min(self.walk_max_values)-10, np.max(self.walk_max_values), 100)
-        pdf = lognorm.pdf(x, shape, loc, scale)
+        probability_past_breakeven = 1 - lognorm.cdf(self.breakeven, *self.random_walk_shape_loc_scale)
+        probability_of_stock_value = 1 - lognorm.cdf(stock_value, *self.random_walk_shape_loc_scale)
         
+        if ax is None:
+            plt.subplots(figsize=(16, 3))
+            
+            plt.plot(x, cdf, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.walk_max_values):.4f} | std {np.std(self.walk_max_values):.4f}')
+            plt.axvline(x=self.breakeven, color='yellow', linestyle='dashed', label=f'Breakeven {self.breakeven:.2f} $ | Call Premium {self.call_premium} $ | {probability_past_breakeven:.4f}%')
+            plt.axvline(x=stock_value, color='white', linestyle='dashed', label=f'Stock Value {stock_value:.2f} $ {probability_of_stock_value:.4f}%')
+            
+            plt.xlabel("Probability")
+            plt.ylabel("Maximum Value ($)")
+            plt.title(f"Percent Point Function for Maximum Value")
+            plt.legend()
+            
+        else:
+            ax.plot(x, cdf, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.walk_max_values):.4f} | std {np.std(self.walk_max_values):.4f}')
+            ax.axvline(x=self.breakeven, color='yellow', linestyle='dashed', label=f'Breakeven {self.breakeven:.2f} $ | Call Premium {self.call_premium} $ | {probability_past_breakeven:.4f}%')
+            ax.axvline(x=stock_value, color='white', linestyle='dashed', label=f'Stock Value {stock_value:.2f} $ {probability_of_stock_value:.4f}%')
+            
+            ax.set_xlabel("Probability")
+            ax.set_ylabel("Maximum Value ($)")
+            ax.set_title(f"Percent Point Function for Maximum Value")
+            ax.legend()
+    
+    def plot_walk(self, ax=None):
+        x = self.random_walk_x
+        pdf = self.random_walk_pdf
         
-        probability_of_profit = 1 - lognorm.cdf(self.breakeven, shape, loc, scale)
-        probability_price_min = 1- lognorm.cdf(call_price_min, shape, loc, scale)
-        
-        most_probable = lognorm.mean(shape, loc, scale)
-        probability_of_most_probable = lognorm.cdf(most_probable, shape, loc, scale)
         
         if ax==None:
-            if call_price_min != None and call_price_max != None:
-                probability_in_spread = lognorm.cdf(call_price_max, shape, loc, scale) - lognorm.cdf(call_price_min, shape, loc, scale)
-                
-                plt.axvline(x=call_price_min, color='green', linestyle='dashed', label=f'Call Min {call_price_min} $')
-                plt.axvline(x=call_price_max, color='green', linestyle='dashed', label=f'Call Max {call_price_max} $')
+            plt.hist(self.walk_max_values, bins=40, color='skyblue', edgecolor='black', density=True, alpha=0.75)    
+            plt.plot(x, pdf, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.walk_max_values):.4f} | std {np.std(self.walk_max_values):.4f}')
 
-                plt.fill_betweenx([plt.ylim()[0], plt.ylim()[1]], call_price_min, call_price_max, color='green', alpha=0.2)
-
-            plt.axvline(x=most_probable, color='pink', linestyle='dashed', label=f'Most Probable MAX Future Price {most_probable:.2f} $ {probability_of_most_probable:.2f}%')
-            plt.plot(x, pdf, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.walk_max_values):.2f} | std {np.std(self.walk_max_values):.2f}')
-
-            plt.axvline(x=self.breakeven, color='yellow', linestyle='dashed', label=f'Breakeven {self.breakeven:.2f} $')
+            plt.axvline(x=self.breakeven, color='yellow', linestyle='dashed', label=f'Breakeven {self.breakeven:.2f} $ | Call Premium {self.call_premium} $ |')
             plt.axvline(x=self.last_price, color='white', linestyle='dashed', label=f'Last Close Price {self.last_price:.2f} $')
 
             plt.xlim(np.mean(self.walk_max_values) - 3 * np.std(self.walk_max_values), np.mean(self.walk_max_values) + 3 * np.std(self.walk_max_values))
 
             plt.xlabel("Maximum Value ($)")
             plt.ylabel("")  # Remove the y-axis label
-            plt.title(f"Distribution of Maximum Values from {self.num_walks} Random Walks | Probability of Profit: {(probability_of_profit*100):.2f}% | Probability min: {probability_price_min*100:.2f}% | Probability in spread: {probability_in_spread*100:.2f}%")
+            plt.title(f"Distribution of Maximum Values from {self.num_walks} Random Walks")
             plt.legend()
             plt.gca().set_yticks([])
             
         else:
-            if call_price_min != None and call_price_max != None:
-                probability_in_spread = lognorm.cdf(call_price_max, shape, loc, scale) - lognorm.cdf(call_price_min, shape, loc, scale)
-                
-                ax.axvline(x=call_price_min, color='green', linestyle='dashed', label=f'Call Min {call_price_min} $')
-                ax.axvline(x=call_price_max, color='green', linestyle='dashed', label=f'Call Max {call_price_max} $')
+            ax.hist(self.walk_max_values, bins=40, color='skyblue', edgecolor='black', density=True, alpha=0.75)    
+            ax.plot(x, pdf, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.walk_max_values):.4f} | std {np.std(self.walk_max_values):.4f}')
 
-                ax.fill_betweenx([ax.get_ylim()[0], ax.get_ylim()[1]], call_price_min, call_price_max, color='green', alpha=0.2)
-
-            ax.axvline(x=most_probable, color='pink', linestyle='dashed', label=f'Most Probable MAX Future Price {most_probable:.2f} $ {probability_of_most_probable:.2f}%')
-            ax.plot(x, pdf, color='red', label=f'Log-Normal Distribution | mean {np.mean(self.walk_max_values):.2f} | std {np.std(self.walk_max_values):.2f}')
-
-            ax.axvline(x=self.breakeven, color='yellow', linestyle='dashed', label=f'Breakeven {self.breakeven:.2f} $')
+            ax.axvline(x=self.breakeven, color='yellow', linestyle='dashed', label=f'Breakeven {self.breakeven:.2f} $ | Call Premium {self.call_premium} $ |')
             ax.axvline(x=self.last_price, color='white', linestyle='dashed', label=f'Last Close Price {self.last_price:.2f} $')
 
             ax.set_xlabel("Maximum Value ($)")
             ax.set_ylabel("")
             
-            ax.set_title(f"Distribution of Maximum Values | Probability of Profit: {(probability_of_profit*100):.2f}% | Most probable MAX Future Price: {most_probable:.2f} $")
-            
+            ax.set_title(f"Distribution of Maximum Values")
+            ax.legend()
             ax.set_xlim(np.mean(self.walk_max_values) - 3 * np.std(self.walk_max_values), np.mean(self.walk_max_values) + 3 * np.std(self.walk_max_values))
